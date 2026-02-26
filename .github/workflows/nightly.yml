@@ -1,0 +1,95 @@
+name: Mirror Plezy Nightly Apk
+
+on:
+    schedule:
+        - cron: "0 */3 * * *"
+    workflow_dispatch:
+
+env:
+    REPO_NAME: edde746/plezy
+    WORKFLOW_NAME: Build
+    ARTIFACT_NAME: android-apk
+    STAGING: staging
+    TEMP_ART: temp_art
+    NIGHTLY_APK_NAME: nightly.apk
+
+jobs:
+    mirror:
+        runs-on: ubuntu-latest
+        permissions: 
+            contents: write
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@v4
+
+            - name: Check Upstream Build Info With Latest Build
+              id: release_info
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  UPDATE_TIME=$(TZ='Etc/GMT-3' date +"%Y-%m-%d %H:%M UTC%:z")
+                  echo "UPDATE_TIME=$UPDATE_TIME" >> $GITHUB_ENV
+
+                  LATEST_BUILD_ID=$(gh run list --repo "$REPO_NAME" --workflow "$WORKFLOW_NAME" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+                  echo "LATEST_BUILD_ID=$LATEST_BUILD_ID" >> $GITHUB_ENV
+
+                  if gh release view "$LATEST_BUILD_ID" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+                      build_exist=true
+                      echo "::Notice::Build $LATEST_BUILD_ID already exists in mirror."
+                  else
+                      build_exist=false
+                      echo "::Notice::New Build Run $LATEST_BUILD_ID Detected."
+                  fi
+                  echo "build_exist=$build_exist" >> $GITHUB_OUTPUT
+
+                  if [ "$build_exist" = "false" ]; then
+                      mkdir -p $STAGING $TEMP_ART
+
+                      # Get latest pre-release tag (if any)
+                      EXISTING_PRERELEASE_TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease==true) | .tagName' | head -n1)
+
+                      
+                      if [ -n "$EXISTING_PRERELEASE_TAG" ]; then
+                          echo "Deleting old nightly pre-release: $EXISTING_PRERELEASE_TAG"
+                          gh release delete "$EXISTING_PRERELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+                          git push --delete origin "$EXISTING_PRERELEASE_TAG" || true
+                      fi
+                  fi
+
+
+            - name: Download and Extract Build APK
+              if: steps.release_info.outputs.build_exist == 'false'
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                BUILD_EXIST: ${{ steps.release_info.outputs.build_exist }}
+              run: |
+                echo "Extracting nightly build..."
+                gh run download "$LATEST_BUILD_ID" --repo $REPO_NAME --name $ARTIFACT_NAME --dir $TEMP_ART || true
+
+                # Extract build release
+                echo "extracting release..."  
+                for file in $TEMP_ART/*arm64-v8a.tar.gz; do
+                    [ -f "$file" ] || continue
+                    mkdir -p $TEMP_ART/extracted
+                    tar -xzf "$file" -C $TEMP_ART/extracted
+                    find $TEMP_ART/extracted -name "*.apk" \
+                        -exec mv {} $STAGING/$NIGHTLY_APK_NAME \;
+                    done
+
+            - name: Publish New Release
+              if: steps.release_info.outputs.build_exist == 'false'
+              uses: softprops/action-gh-release@v2
+              with:
+                tag_name: ${{ env.LATEST_BUILD_ID }}
+                name: Plezy Mirror (${{ env.LATEST_BUILD_ID }})
+                body: |
+                    ## Plezy Mirror
+
+                    ### 📦 Version Details
+                    * **Nightly Build:** `${{ env.LATEST_BUILD_ID }}`
+                    * **Updated at:** `${{ env.UPDATE_TIME }}`
+
+                    ---
+                    *Automated build.*
+                files: staging/*.apk
+                prerelease: true

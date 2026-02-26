@@ -1,0 +1,87 @@
+name: Mirror Plezy Release Apk
+
+on:
+    schedule:
+        - cron: "0 0 * * *"
+    workflow_dispatch:
+
+env:
+    REPO_NAME: edde746/plezy
+    ARM_64_APK: "*arm64-v8a.tar.gz"
+    STAGING: staging
+    TEMP_REL: temp_rel
+    OFFICIAL_APK_NAME: release.apk
+
+jobs:
+    mirror:
+        runs-on: ubuntu-latest
+        permissions: 
+            contents: write
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@v4
+
+            - name: Check Upstream Repo Latest With Latest Release
+              id: release_info
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                UPDATE_TIME=$(TZ='Etc/GMT-3' date +"%Y-%m-%d %H:%M UTC%:z")
+                echo "UPDATE_TIME=$UPDATE_TIME" >> $GITHUB_ENV
+
+                LATEST_TAG=$(gh release view --repo "$REPO_NAME" --json tagName --jq '.tagName' 2>/dev/null || echo "")
+                echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+                if gh release view "$LATEST_TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+                    release_exist=true
+                    echo "::Notice::Release $LATEST_TAG already exists in mirror."
+                else
+                    release_exist=false
+                    echo "::Notice::New Upstream Release $LATEST_TAG Detected."
+                fi
+                echo "release_exist=$release_exist" >> $GITHUB_OUTPUT
+
+                if [ "$release_exist" = "false" ]; then
+                    mkdir -p $STAGING $TEMP_REL
+                    echo "Created folders for download"
+                fi
+
+            - name: Download and Extract Latest APK
+              if: steps.release_info.outputs.release_exist == 'false'
+              env:
+                GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                RELEASE_EXIST: ${{ steps.release_info.outputs.release_exist }}
+              run: |
+                echo "Extracting official release..."
+                gh release download "$LATEST_TAG" --repo $REPO_NAME --pattern $ARM_64_APK --dir $TEMP_REL || true
+
+                # Extract official release
+                echo "extracting release..."  
+                for file in $TEMP_REL/*arm64-v8a.tar.gz; do
+                    [ -f "$file" ] || continue
+                    mkdir -p $TEMP_REL/extracted
+                    tar -xzf "$file" -C $TEMP_REL/extracted
+                    find $TEMP_REL/extracted -name "*.apk" \
+                        -exec mv {} $STAGING/$OFFICIAL_APK_NAME \;
+                    done
+
+            - name: Publish New Release
+              if: steps.release_info.outputs.release_exist == 'false'
+              uses: softprops/action-gh-release@v2
+              env:
+                BUILD_STATUS: ${{ steps.release_info.outputs.BUILD_STATUS }}
+              with:
+                tag_name: ${{ env.LATEST_TAG }}
+                name: Plezy Mirror (${{ env.LATEST_TAG }})
+                body: |
+                    ## Plezy Mirror
+
+                    **Original Release:** https://github.com/edde746/plezy/releases/latest/
+                    ### 📦 Version Details
+                    * **Official Release:** `${{ env.LATEST_TAG }}`
+                    * **Updated at:** `${{ env.UPDATE_TIME }}`
+
+                    ---
+                    *Automated build.*
+                files: staging/*.apk
+                make_latest: true
