@@ -30,8 +30,13 @@ jobs:
                   UPDATE_TIME=$(TZ='Etc/GMT-3' date +"%Y-%m-%d %H:%M UTC%:z")
                   echo "UPDATE_TIME=$UPDATE_TIME" >> $GITHUB_ENV
 
-                  LATEST_BUILD_ID=$(gh run list --repo "$REPO_NAME" --workflow "$WORKFLOW_NAME" --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo "")
+                  LATEST_RUN_JSON=$(gh run list --repo "$REPO_NAME" --workflow "$WORKFLOW_NAME" --status success --limit 1 --json databaseId,headSha 2>/dev/null || echo "")
+
+                  LATEST_BUILD_ID=$(echo "$LATEST_RUN_JSON" | jq -r '.[0].databaseId')
+                  UPSTREAM_COMMIT_SHA=$(echo "$LATEST_RUN_JSON" | jq -r '.[0].headSha')
+
                   echo "LATEST_BUILD_ID=$LATEST_BUILD_ID" >> $GITHUB_ENV
+                  echo "UPSTREAM_COMMIT_SHA=$UPSTREAM_COMMIT_SHA" >> $GITHUB_ENV
 
                   if gh release view "$LATEST_BUILD_ID" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
                       build_exist=true
@@ -87,6 +92,7 @@ jobs:
 
                     ### 📦 Version Details
                     * **Nightly Build:** `${{ env.LATEST_BUILD_ID }}`
+                    * **Commit:** https://github.com/${{ env.REPO_NAME }}/commit/${{ env.UPSTREAM_COMMIT_SHA }}
                     * **Updated at:** `${{ env.UPDATE_TIME }}`
 
                     ---
